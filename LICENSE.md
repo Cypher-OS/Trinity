@@ -1,4 +1,8 @@
-TRINITY Init System and Service manager - DUAL LICENSE
+**TRINITY Init System and Service Manager - DUAL LICENSE
+**
+==============================
+    TRINITY Init System and Service Manager - DUAL LICENSE
+==============================
 
 Copyright (c) 2025 Venkateshwaran S
 
@@ -28,7 +32,7 @@ Contact venkkat764@gmail.com for licensing inquiries.
 Notes:
  - The Linux kernel used by this software remains GPLv2, which cannot be relicensed.
 
-                     GNU GENERAL PUBLIC LICENSE
+                      GNU GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
 
  Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
