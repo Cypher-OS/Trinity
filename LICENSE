@@ -1,45 +1,32 @@
 TRINITY Init System and Service manager - DUAL LICENSE
 
-Copyright (c) 2025 Venkateshwaran
+Copyright (c) 2025 Venkateshwaran S
 
 This software is available under **two licensing options**:
 
----
-
 1. GNU General Public License v3 (GPLv3) or later
 
-You may:
-- Use, modify, and redistribute this software for free under GPLv3 terms.
-- Share modifications only under GPLv3.
-- Include in other GPL-compatible projects.
-
-Restrictions:
-- You must provide source code of any modifications.
-- You cannot incorporate this software into a proprietary project without releasing changes under GPLv3.
-- The software is provided WITHOUT ANY WARRANTY.
-
-
----
+  You may:
+  - Use, modify, and redistribute this software for free under GPLv3 terms.
+  - Share modifications only under GPLv3.
+  - Include in other GPL-compatible projects.
+  
+  Restrictions:
+  - You must provide source code of any modifications.
+  - You cannot incorporate this software into a proprietary project without releasing changes under GPLv3.
+  - The software is provided WITHOUT ANY WARRANTY.
 
 2. Commercial License
 
-You may obtain a commercial license if you want to:
-- Embed this software in closed-source projects
-- Modify it without releasing the source code
-- Distribute proprietary versions
+  You may obtain a commercial license if you want to:
+  - Embed this software in closed-source projects
+  - Modify it without releasing the source code
+  - Distribute proprietary versions
 
-Contact [your email / website] for licensing inquiries.
-
----
+Contact venkkat764@gmail.com for licensing inquiries.
 
 Notes:
-- The Linux kernel used by this software remains GPLv2, which cannot be relicensed.
-
-
-
-
-
-
+ - The Linux kernel used by this software remains GPLv2, which cannot be relicensed.
 
                      GNU GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
