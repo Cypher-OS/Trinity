@@ -161,7 +161,7 @@ static void tryOpenLog() {
         use_syslog_fallback = 0;
         xlog("log opened: %s", LOG_PATH);
     } else {
-        openlog("cypherd", LOG_PID | LOG_CONS, LOG_DAEMON);
+        openlog("trinity", LOG_PID | LOG_CONS, LOG_DAEMON);
         syslog(LOG_ERR, "cannot open log file %s: %s", LOG_PATH, strerror(errno));
         use_syslog_fallback = 1;
         logfd = -1;
@@ -170,8 +170,11 @@ static void tryOpenLog() {
 
 static void mountEssentials() {
 
-    mkdir("/dev/pts", 0755);
-    mkdir("/dev/shm", 0755);
+     if (mount(NULL, "/", NULL, MS_REMOUNT, NULL) == -1) {
+        klog("FATAL: Failed to remount root(/) as R/W: %s", strerror(errno));
+    } else {
+        klog("Remounted root filesystem (/) as R/W.");
+    }
 
     if (mount("proc", "/proc", "proc", 0, NULL) == -1 && errno != EBUSY) {
         klog("mounting /proc failed!: %s", strerror(errno));
@@ -184,6 +187,14 @@ static void mountEssentials() {
     if (mount("devtmpfs", "/dev", "devtmpfs", 0, NULL) == -1 && errno != EBUSY) {
         klog("mounting /dev failed!: %s", strerror(errno));
     } else klog("mounted /dev.");
+
+    if (mkdir("/dev/pts", 0755) < 0 && errno != EEXIST) {
+        klog("FATAL: Failed to create /dev/pts directory: %s", strerror(errno));
+    }
+    
+    if (mkdir("/dev/shm", 01777) < 0 && errno != EEXIST) {
+        klog("FATAL: Failed to create /dev/shm directory: %s", strerror(errno));
+    }
 
     if (mount("devpts", "/dev/pts", "devpts", 0, NULL) == -1 && errno != EBUSY) {
         klog("mounting /dev/pts failed!: %s", strerror(errno));
@@ -261,7 +272,7 @@ int main() {
 
     mountEssentials();
     setupSignals();
-    spawnGetty();
+    // spawnGetty();
     pid_t pid = fork();
     if (pid == 0) {
         execl("/sbin/trinity", "trinity",  NULL);

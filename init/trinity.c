@@ -103,6 +103,29 @@ volatile sig_atomic_t shutting_down = 0;
 
 //utils
 
+static void klog(const char *fmt, ...) {
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf) - 1, fmt, ap);
+    va_end(ap);
+    size_t len = strlen(buf);
+    if (len == 0) return;
+    if (buf[len - 1] != '\n') {
+        if (len < sizeof(buf) - 1) {
+            buf[len++] = '\n';
+            buf[len] = '\0';
+        }
+    }
+
+    int fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+    if (fd >= 0) {
+        int r = write(fd, buf, len);
+        (void)r;
+        close(fd);
+    }
+}
+
 void logmsg(const char *fmt, ...) {
     char buf[LOG_BUF];
     va_list ap;
@@ -885,6 +908,7 @@ static void startAll(void) {
 
 static void stopAll(void) {
     shutting_down = 1;
+    klog("Shutting down Cypher! Stopping units one by one. In reverse start order");
     for (int i = start_order_n - 1; i >= 0; --i) {
         unit_t *u = &units[start_order[i]];
         if(u->state == US_ACTIVE || u->state == US_ACTIVATING) {
