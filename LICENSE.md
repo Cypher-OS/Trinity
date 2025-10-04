@@ -1,8 +1,5 @@
-**TRINITY Init System and Service Manager - DUAL LICENSE
-**
-==============================
-    TRINITY Init System and Service Manager - DUAL LICENSE
-==============================
+ TRINITY Init System and Service Manager - DUAL LICENSE
+=
 
 Copyright (c) 2025 Venkateshwaran S
 
