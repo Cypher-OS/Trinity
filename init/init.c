@@ -17,7 +17,6 @@
 #include <sys/prctl.h>
 #include <limits.h>
 
-#define SHELL "/bin/bash"
 #define LOG_PATH "/var/log/initrinity.log"
 
 static volatile sig_atomic_t sigchldFlag = 0;
@@ -130,6 +129,7 @@ static void reapChildren() {
 
 static void shutdown() {
     klog("shutting down Cypher!");
+    
 
     reapChildren();
     sync();

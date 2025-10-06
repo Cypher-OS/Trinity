@@ -36,6 +36,7 @@
 #define MAX_UNITS 512
 #define MAX_LINE 2048
 #define LOG_BUF 2048
+#define CMD_BUF 1024
 
 #define DEFAULT_RESTART_SECS 2
 #define DEFAULT_STARTLIMIT_INTERVAL 10
@@ -59,6 +60,16 @@ typedef enum {
     RM_ONFAIL,
     RM_ALWAYS
 } rmode_t;
+
+typedef enum {
+    CMD_INVALID = 0,
+    CMD_START,
+    CMD_STOP,
+    CMD_RESTART,
+    CMD_STATUS,
+    CMD_SHUTDOWN,
+    CMD_REBOOT
+} cmd_verb_t;
 
 typedef struct unit {
     char name[128];
@@ -246,6 +257,17 @@ int readFileToBuf(const char *path, char *buf, size_t buflen) {
     return 0;
 }
 
+static cmd_verb_t getCommandVerb(const char *verb) {
+    if (!verb) return CMD_INVALID;
+    if (!strcasecmp(verb, "start")) return CMD_START;
+    if (!strcasecmp(verb, "stop")) return CMD_STOP;
+    if (!strcasecmp(verb, "status")) return CMD_STATUS;
+    if (!strcasecmp(verb, "restart")) return CMD_RESTART;
+    if (!strcasecmp(verb, "shutdown")) return CMD_SHUTDOWN;
+    if (!strcasecmp(verb, "reboot")) return CMD_REBOOT;
+    return CMD_INVALID;
+}
+
 //parsing units
 
 int parseUnitFile(const char *path, unit_t *u) {
@@ -264,8 +286,9 @@ int parseUnitFile(const char *path, unit_t *u) {
         char key[256], val[MAX_LINE];
         snprintf(key, sizeof(key), "%s", tmp);
         snprintf(val, sizeof(val), "%s", eq+1);
-        trim(key); trim(val);
-         if (!strcasecmp(key, "ExecStart")) {
+        trim(key); 
+        trim(val);
+         if (!strcasecmp(key, "Exec")) {
             strncpy(u->exec, stripQuotes(val), sizeof(u->exec)-1);
         } else if (!strcasecmp(key, "Restart")) {
             if (!strcasecmp(val, "always")) u->restart = RM_ALWAYS;
@@ -327,7 +350,7 @@ int loadUnits(void) {
             u->state = US_INACTIVE;
             u->restart_timerfd = -1;
             if (parseUnitFile(path, u) == 0) {
-                logmsg("loaded unit %s -> '%s'", u->name, u->exec);
+                logmsg("initialized unit %s -> '%s'", u->name, u->exec);
                 n_units++;
             } else {
                 logmsg("failed to parse %s", path);
@@ -601,7 +624,6 @@ static int startUnit(unit_t *u) {
             chdir("/");
         }
 
-
         char **envp = prepareEnv(u);
         char **argv = prepareArgv(u->exec);
         if (!argv || !argv[0]) {
@@ -634,7 +656,7 @@ static int startUnit(unit_t *u) {
         }
         u->start_time = getStartProcTime(pid);
         if (!u->start_time) {
-        logmsg("Warning: failed to record start_time for %s (pid=%d)", u->name, pid);
+        logmsg("Warning: failed to record startTime for %s (pid=%d)", u->name, pid);
         }   
         logmsg("started %s pid=%d", u->name, pid);
         return 0;
@@ -895,6 +917,135 @@ static int setupSignalfd(void) {
 
 //socket
 
+static int setupSocket(void) {
+    struct sockaddr_un address;
+    int cfd;
+    
+    if((cfd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0)) < 0) { 
+        logmsg("socket initialization failed! %s", strerror(errno));
+        return -1;
+    }    
+    unlink(CONTROL_SOCKET);
+
+
+    memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    strncpy(address.sun_path, CONTROL_SOCKET, sizeof(address.sun_path) - 1);
+
+    socklen_t len = offsetof(struct sockaddr_un, sun_path) + strlen(address.sun_path) + 1;
+
+    if(bind(cfd, (struct sockaddr*)&address, len) < 0) {
+        logmsg("bind failed for %s: %s", CONTROL_SOCKET, strerror(errno));
+        close(cfd);
+        return -1;
+    }
+
+    if(chmod(CONTROL_SOCKET, 0600) < 0) {
+        logmsg("chmod failed for %s: %s", CONTROL_SOCKET, strerror(errno));
+        close(cfd);
+        return -1;
+    }
+
+    if(listen(cfd, 10) < 0) {
+        logmsg("listening failed: %s", strerror(errno));
+        close(cfd);
+        return -1;
+    }
+
+    return cfd;
+
+}
+
+static void handleClient(int cfd) {
+    struct sockaddr_un cliAddr;
+    socklen_t len = sizeof(cliAddr);
+
+    int clifd = accept4(cfd, (struct sockaddr_un*)&cliAddr, &len, SOCK_CLOEXEC);
+    if (clifd < 0) {
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            logmsg("accept failed: %s", strerror(errno));
+        }
+        return;
+    }
+
+    char cmdBuf[CMD_BUF] = {0};
+    ssize_t n = read(clifd, cmdBuf, sizeof(cmdBuf) - 1);
+
+    if (n > 0) {
+        trim(cmdBuf);
+        logmsg("'%s' command recieved.", cmdBuf);
+        char *response = "OKAY";
+        char *saveptr = NULL;
+        char *verbStr = strtok_r(cmdBuf, " ", &saveptr);
+        char *unitName = strtok_r(NULL, " ", &saveptr);
+
+        cmd_verb_t verb = getCommandVerb(verbStr);
+
+        if (verb == CMD_SHUTDOWN) {
+            shutting_down = 1;
+            response = "Initiating shutdown.";
+        } else if (verb != CMD_INVALID) {
+            if (unitName) {
+                unit_t *u = findUnitByName(unitName);
+                if(!u) {
+                    response = "Oh no! No such unit.";
+                } else {
+                    switch(verb) {
+                        case CMD_START:
+                            if (u->state == US_ACTIVE) 
+                                response = "Unit is already running!";
+                            else if (u->state == US_ACTIVATING) 
+                                response = "Unit is already under activation!";
+                            else if (u->state == US_RESTART_SCHEDULED) 
+                                response = "Unit is scheduled for restart. Please wait before starting again!";
+                            else {
+                                if (startUnit(u) == 0) response = "Unit initialized.";
+                                else response = "Failed to initialize unit.";
+                            }
+                            break;
+                        case CMD_STOP:
+                            if (u->state == US_INACTIVE || u->state == US_FAILED) 
+                                response = "Unit is already inactive.";
+                            else if (u->state == US_DEACTIVATING) 
+                                response = "Unit is stopping. Please wait!";
+                            else {
+                                cancelRestart(u);
+                                response = "Stopping unit...";
+                                stopUnit(u);
+                            }
+                            break;
+                        case CMD_RESTART:
+                            cancelRestart(u);
+                            if (u->state == US_ACTIVE || u->state  == US_ACTIVATING || u->state == US_DEACTIVATING) {
+                                logmsg("%s is active, stopping before restart.", u->name);
+                                stopUnit(u);
+                            }
+                            if (startUnit(u) == 0)
+                                response = "Initializing unit.";
+                            else response = "Failed to initialize unit!";
+                            break;
+                        case CMD_STATUS:
+                            char statusResp[512];
+                            const char *state[] = {"inactive", "activating", "active", "deactivating", "failed", "restart-scheduled"};
+                            snprintf(statusResp, sizeof(statusResp), "Unit:%s State:%s PID=%d Description:%s", u->name, state[u->state], u->pid, u->desc);
+                            response = statusResp;
+                            break;
+                        default:
+                            response = "Error: Internal command error.";
+                            break;
+                    }
+                }
+            }
+        } else {
+             response = "Uhm! That's an invalid format. Expected 'trinity CMD SERVICE_NAME'";
+        }
+        write(clifd, response, strlen(response));
+    } else {
+        logmsg("error reading from control socket!: %s", strerror(errno));
+    }
+    close(clifd);
+}
+
 //start stop all
 static void startAll(void) {
     for (int i = 0; i < start_order_n; ++i) {
@@ -906,7 +1057,7 @@ static void startAll(void) {
     }
 }
 
-static void stopAll(void) {
+void stopAll(void) {
     shutting_down = 1;
     klog("Shutting down Cypher! Stopping units one by one. In reverse start order");
     for (int i = start_order_n - 1; i >= 0; --i) {
@@ -928,6 +1079,17 @@ static void runEventLoop(void) {
         logmsg("cannot setup signalfd");
         return;
     }
+
+    control_fd = setupSocket();
+    if (control_fd >= 0) {
+        struct epoll_event ev = {.events = EPOLLIN, .data.fd = control_fd};
+        if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, control_fd, &ev) < 0) {
+            logmsg("adding epoll_ctl in control socket failed: %s", strerror(errno));
+            close(control_fd);
+            control_fd = -1;
+        }
+    }
+
     struct epoll_event events[32];
     while(!shutting_down) {
         int n = epoll_wait(epoll_fd, events, 32, -1);
@@ -952,6 +1114,8 @@ static void runEventLoop(void) {
                         shutting_down = 1;
                     }
                 }
+            } else if (control_fd >= 0 && ev->data.fd == control_fd) {
+                handleClient(control_fd);
             } else {
                 unit_t *u = (unit_t *)ev->data.ptr;
                 if (!u) continue;
@@ -961,14 +1125,19 @@ static void runEventLoop(void) {
                     close(u->restart_timerfd);
                     u->restart_timerfd = -1;
                     logmsg("restart timer expired for %s, attempting start", u->name);
+                    u->state = US_INACTIVE;
                     startUnit(u);
                 }
             }
-
         }
     }
-    logmsg("event loop exiting, shutting down untis");
+    logmsg("event loop exiting, shutting down units");
     stopAll();
+
+    if (control_fd >= 0) {
+        close(control_fd);
+        unlink(CONTROL_SOCKET);
+    }
 }
 
 static void setupBasicDirs(void) {
@@ -976,10 +1145,70 @@ static void setupBasicDirs(void) {
     mkdir(RUN_DIR, 0755);
 }
 
+int sendCommand(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: trinity <command> [unit_name]\n");
+        fprintf(stderr, "Commands: start, stop, status, restart, shutdown\n");
+        return 1;
+    }
+
+    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock < 0) {
+        perror("error while establising socket!");
+        logmsg("error while establishing client socket!");
+        return 1;
+    }
+
+    struct sockaddr_un adr;
+    memset(&adr, 0, sizeof(adr));
+    adr.sun_family = AF_UNIX;
+    strncpy(adr.sun_path, CONTROL_SOCKET, sizeof(adr.sun_path) - 1);
+
+    if(connect(sock, (struct sockaddr_un*)&adr, sizeof(adr)) < 0) {
+        fprintf(stderr, "Failed to connect to Trinity daemon at %s: %s\n", CONTROL_SOCKET, strerror(errno));
+        close(sock);
+        return 1;
+    }
+
+    char cmdStr[CMD_BUF] = {0};
+    if (argc == 2 && !strcasecmp(argv[1], "shutdown")) {
+        snprintf(cmdStr, sizeof(cmdStr), "%s", argv[1]);
+    } else if (argc == 3) {
+        snprintf(cmdStr, sizeof(cmdStr), "%s %s", argv[1], argv[2]);
+    } else {
+        fprintf(stderr, "Invalid number of arguments for command '%s'.\n", argv[1]);
+        close(sock);
+        return 1;
+    }
+
+    if(write(sock, cmdStr, strlen(cmdStr)) < 0) {
+        perror("write to socket failed");
+        close(sock);
+        return 1;
+    }
+
+    char responseBuf[CMD_BUF] = {0};
+    ssize_t n = read(sock, responseBuf, sizeof(responseBuf) - 1);
+    if (n > 0) {
+        printf("%s\n", responseBuf);
+    }
+    else {
+        fprintf(stderr, "Error reading response.");
+    }
+
+    close(sock);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     prctl(PR_SET_CHILD_SUBREAPER, 1);
 
-    // setupBasicDirs();
+    if (argc > 1) {
+        int res = sendCommand(argc, argv);
+        return res;
+    }
+
+    setupBasicDirs();
 
     if(loadUnits() <= 0) {
         logmsg("no units found under %s", UNIT_DIR);
