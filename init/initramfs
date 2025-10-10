@@ -1,0 +1,126 @@
+#!/bin/sh
+
+echo "init: starting dual-mode system (direct persistence)..."
+
+mount -t proc proc /proc || echo "init: WARNING: mount /proc failed."
+mount -t sysfs sysfs /sys || echo "init: WARNING: mount /sys failed."
+
+mount -t devtmpfs devtmpfs /dev || echo "init: ERROR: mount /dev failed. Cannot continue."
+if [ -x /sbin/mdev ]; then
+  echo /sbin/mdev >/proc/sys/kernel/hotplug 2>/dev/null
+  /sbin/mdev -s
+  echo "init: mdev run complete."
+else
+  echo "init: WARNING: mdev not found. Device files may be incomplete."
+fi
+
+CMDLINE=$(cat /proc/cmdline 2>/dev/null)
+
+ROOTDEV_PARAM=$(echo "$CMDLINE" | grep -o 'root=[^ ]*' | cut -d= -f2)
+MODE_FLAG=$(echo "$CMDLINE" | grep -E -o 'persistence|ephemeral' | head -n 1)
+
+if [ -z "$MODE_FLAG" ]; then
+  MODE_FLAG="ephemeral"
+  echo "init: WARNING: no mode flag. Defaulting to $MODE_FLAG mode."
+fi
+
+if [ -z "$ROOTDEV_PARAM" ]; then
+  ROOTDEV="LABEL=CYPHER_BASE" 
+  echo "init: WARNING: no root= param. Defaulting to $ROOTDEV."
+else
+  ROOTDEV="$ROOTDEV_PARAM"
+fi
+
+echo "init: Final target -> $ROOTDEV (Mode: $MODE_FLAG)"
+
+TARGET_DEV_PATH=$(/sbin/findfs "$ROOTDEV" 2>/dev/null)
+
+MAX_WAIT=15
+count=0
+
+echo "init: Waiting up to $MAX_WAIT seconds for $ROOTDEV to appear..."
+
+while [ -z "$TARGET_DEV_PATH" ] && [ $count -lt $MAX_WAIT ]; do
+    /sbin/mdev -s 2>/dev/null
+    sleep 1
+    TARGET_DEV_PATH=$(/sbin/findfs "$ROOTDEV" 2>/dev/null)
+    count=$((count + 1))
+done
+
+if [ -z "$TARGET_DEV_PATH" ]; then
+    echo "init: ERROR: Target device ($ROOTDEV) did not appear after $MAX_WAIT seconds. Dropping to shell."
+    exec /bin/sh
+fi
+echo "init: Target device found at $TARGET_DEV_PATH."
+
+mkdir -p /newroot
+
+if [ "$MODE_FLAG" = "persistence" ]; then
+  
+  echo "init: PERSISTENCE MODE SELECTED. Mounting $TARGET_DEV_PATH directly as writable root."
+  sleep 2
+  
+  if ! mount -o rw "$TARGET_DEV_PATH" /newroot; then
+    echo "init: ERROR: Direct mount of $TARGET_DEV_PATH failed! Dropping to shell."
+    exec /bin/sh
+  fi
+  
+else
+  
+  mkdir -p /live/readonly /live/rw /live/work
+  
+  echo "init: Mounting read-only base system ($TARGET_DEV_PATH) to /live/readonly"
+  sleep 2
+  if ! mount -o ro "$TARGET_DEV_PATH" /live/readonly; then
+    echo "init: ERROR: mount base system failed. Dropping to shell."
+    exec /bin/sh
+  fi
+
+  UPPER_MOUNT_POINT="/live/rw" 
+  UPPER_DIR="/live/rw/upper"
+  WORK_DIR="/live/rw/work"
+  
+  RAM_SIZE="14G"
+  echo "init: EPHEMERAL MODE: Setting up tmpfs writable layer (size=$RAM_SIZE)."
+  if ! mount -t tmpfs -o size=$RAM_SIZE tmpfs "$UPPER_MOUNT_POINT"; then
+    echo "init: ERROR: tmpfs mount failed. Dropping to shell."
+    umount /live/readonly 2>/dev/null
+    exec /bin/sh
+  fi
+  
+  mkdir -p "$UPPER_DIR" "$WORK_DIR"
+    
+  OVERLAY_OPTS="lowerdir=/live/readonly,upperdir=$UPPER_DIR,workdir=$WORK_DIR"
+  echo "init: Mounting OverlayFS merged root to /newroot (Mode: $MODE_FLAG)"
+  
+  if ! mount -t overlay overlay -o "$OVERLAY_OPTS" /newroot; then
+    echo "init: FATAL ERROR: OverlayFS mount failed. Dropping to shell."
+    umount /live/readonly 2>/dev/null
+    umount "$UPPER_MOUNT_POINT" 2>/dev/null
+    exec /bin/sh
+  fi
+fi
+
+echo "init: Success. Starting real init."
+REAL_INIT="/sbin/init1"
+
+if [ -x /bin/switch_root ]; then
+  SWITCH_ROOT_BIN="/bin/switch_root"
+elif [ -x /sbin/switch_root ]; then
+  SWITCH_ROOT_BIN="/sbin/switch_root"
+fi
+
+if [ -x "$SWITCH_ROOT_BIN" ]; then
+  exec "$SWITCH_ROOT_BIN" /newroot "$REAL_INIT"
+else
+  mount --move /proc /newroot/proc 2>/dev/null
+  mount --move /sys /newroot/sys 2>/dev/null
+  mount --move /dev /newroot/dev 2>/dev/null
+
+  /bin/pivot_root /newroot /newroot/oldroot
+
+  umount /oldroot 2>/dev/null
+  rmdir /oldroot 2>/dev/null
+  
+  exec "$REAL_INIT"
+fi
