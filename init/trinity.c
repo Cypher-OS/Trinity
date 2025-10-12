@@ -41,7 +41,7 @@
 #define DEFAULT_RESTART_SECS 2
 #define DEFAULT_STARTLIMIT_INTERVAL 10
 #define DEFAULT_STARTLIMIT_BURST 5
-#define STOP_GRACE_SEC 5
+#define STOP_GRACE_SEC 1
 
 #define UNIT_IMMORTAL (1<<0)   
 #define UNIT_CHILD    (1<<1)
@@ -111,6 +111,10 @@ int epoll_fd = -1;
 int signalfd_fd = -1;
 int control_fd = -1;
 volatile sig_atomic_t shutting_down = 0;
+
+int start_order[MAX_UNITS];
+int start_order_n = 0;
+int visited[MAX_UNITS];
 
 //utils
 
@@ -393,10 +397,6 @@ void buildDeps(void) {
         }
     }
 }
-
-int start_order[MAX_UNITS];
-int start_order_n = 0;
-int visited[MAX_UNITS];
 
 int index_of(unit_t *u) {
     for (int i = 0; i < n_units; ++i) if (&units[i] == u) return i;
@@ -756,7 +756,7 @@ static void stopUnit(unit_t *u) {
             return;
         }
 
-        struct timespec sleep_ts = {0, 100 * 1000 * 1000};
+        struct timespec sleep_ts = {0, 1 * 1000 * 1000};
         nanosleep(&sleep_ts, NULL);
 
         clock_gettime(CLOCK_MONOTONIC, &tnow);
@@ -983,12 +983,26 @@ static void handleClient(int cfd) {
 
         if (verb == CMD_SHUTDOWN) {
             shutting_down = 1;
+            
+            if (kill(1, SIGUSR2) < 0) {
+                logmsg("Failed to signal init, SIGUSR2: %s", strerror(errno));
+                response = "Warning: Initiating shutdown, but failed to signal PID 1.";
+            }
             response = "Initiating shutdown.";
-        } else if (verb != CMD_INVALID) {
+        } else if (verb == CMD_REBOOT) {
+            shutting_down = 1;
+            if (kill(1, SIGUSR1) < 0) {
+                logmsg("Failed to signal init, SIGUSR1: %s", strerror(errno));
+                response = "Warning: Initiating reboot, but failed to signal PID 1.";
+            }
+            response = "Initiating reboot.";
+
+        } 
+        else if (verb != CMD_INVALID) {
             if (unitName) {
                 unit_t *u = findUnitByName(unitName);
                 if(!u) {
-                    response = "Oh no! No such unit.";
+                    response = "Uhm! No such unit.";
                 } else {
                     switch(verb) {
                         case CMD_START:
@@ -1171,7 +1185,7 @@ int sendCommand(int argc, char **argv) {
     }
 
     char cmdStr[CMD_BUF] = {0};
-    if (argc == 2 && !strcasecmp(argv[1], "shutdown")) {
+    if (argc == 2 && !strcasecmp(argv[1], "shutdown") || !strcasecmp(argv[1], "reboot")) {
         snprintf(cmdStr, sizeof(cmdStr), "%s", argv[1]);
     } else if (argc == 3) {
         snprintf(cmdStr, sizeof(cmdStr), "%s %s", argv[1], argv[2]);

@@ -22,10 +22,21 @@
 static volatile sig_atomic_t sigchldFlag = 0;
 static volatile sig_atomic_t sigtermFlag = 0;
 static volatile sig_atomic_t sighupFlag = 0;
+static volatile sig_atomic_t sigusr1Flag = 0;
+static volatile sig_atomic_t sigusr2Flag = 0;
 
 static int logfd = -1;
 static int use_syslog_fallback = 0;
 static void tryOpenLog(void);
+static pid_t tpid = 0;
+
+typedef enum {
+    SHUTDOWN_NONE,
+    SHUTDOWN_POWEROFF,
+    SHUTDOWN_REBOOT
+} shutdown_mode_t;
+
+static shutdown_mode_t global_shutdown_mode = SHUTDOWN_NONE;
 
 static void xlog(const char *fmt, ...) {
     char buf[512];
@@ -91,6 +102,16 @@ static void sighupHandler(int sig) {
     sighupFlag = 1;
 }
 
+static void sigusr1Handler(int sig) {
+    (void)sig;
+    sigusr1Flag = 1;
+}
+
+static void sigusr2Handler(int sig) {
+    (void)sig;
+    sigusr2Flag = 1;
+}
+
 static void setupSignals() {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -110,6 +131,16 @@ static void setupSignals() {
     sa.sa_handler = sighupHandler;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGHUP, &sa, NULL);
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigusr1Handler;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGUSR1, &sa, NULL);
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigusr2Handler;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGUSR2, &sa, NULL);
 } 
 
 static void reapChildren() {
@@ -124,12 +155,16 @@ static void reapChildren() {
             xlog("waitpid error: %s", strerror(errno));
             break;
         }
+
+        if (pid == tpid) {
+            klog("Reaped main Trinity daemon (PID %d).", pid);
+            tpid = 0; 
+        }
     }
 }
 
 static void shutdown() {
-    klog("shutting down Cypher!");
-    
+    klog("Initiating %s", global_shutdown_mode == SHUTDOWN_REBOOT ? "Reboot" : "Power Off");    
 
     reapChildren();
     sync();
@@ -139,17 +174,22 @@ static void shutdown() {
     umount2("/run", MNT_DETACH);
     umount2("/tmp", MNT_DETACH);
 
-    if(reboot(RB_POWER_OFF) == -1) {
-        klog("reboot failed!");
+    int final_command = RB_POWER_OFF;
+    if (global_shutdown_mode == SHUTDOWN_REBOOT) {
+        final_command = RB_AUTOBOOT;
+    }
+
+    if(reboot(final_command) == -1) { 
+        klog("reboot failed! Attempting emergency shell.");
         mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
         int fd = open("/dev/console", O_RDWR);
-        if (fd >= 0) {
+         if (fd >= 0) {
             dup2(fd, STDIN_FILENO);
             dup2(fd, STDOUT_FILENO);
             dup2(fd, STDERR_FILENO);
             if (fd > 2) close(fd);
         }
-        execl("/bin/sh", "sh", NULL);   
+        execl("/bin/sh", "sh", NULL);  
     }
 }
 
@@ -209,8 +249,8 @@ static void mountEssentials() {
     } else klog("mounted /run.");
 
     if (mount("cgroup2","/sys/fs/cgroup", "cgroup2", 0, NULL) == -1 && errno != EBUSY) {
-        klog("mounting /cgroup/cgroup2 failed!: %s", strerror(errno));
-    } else klog("mounted /cgroup/cgroup2.");
+        klog("mounting /sys/fs/cgroup2 failed!: %s", strerror(errno));
+    } else klog("mounted /sys/fs/cgroup2.");
 
     if (mount("tmpfs", "/tmp", "tmpfs", 0, NULL) == -1 && errno != EBUSY) {
         klog("mounting /tmp failed!: %s", strerror(errno));
@@ -273,13 +313,14 @@ int main() {
     mountEssentials();
     setupSignals();
     // spawnGetty();
-    pid_t pid = fork();
-    if (pid == 0) {
+    // pid_t pid = fork();
+    tpid = fork();
+    if (tpid == 0) {
         execl("/sbin/trinity", "trinity",  NULL);
         klog("exec trinity failed");
         _exit(127);
     }
-    klog("Trinity started as pid=%d", pid);
+    klog("Trinity started as pid=%d", tpid);
 
 
     sigprocmask(SIG_SETMASK, &old, NULL);
@@ -288,9 +329,22 @@ int main() {
     sigemptyset(&emptymask);
 
     while(1) {
+        if (sigusr1Flag) {
+            sigusr1Flag = 0;
+            global_shutdown_mode = SHUTDOWN_REBOOT;
+        }
+        if (sigusr2Flag) {
+            sigusr2Flag = 0;
+            global_shutdown_mode = SHUTDOWN_POWEROFF;
+        }
         if (sigchldFlag) {
             sigchldFlag = 0;
             reapChildren();
+
+            if (global_shutdown_mode != SHUTDOWN_NONE && tpid <= 0) { 
+                klog("Trinity has exited. Initiating final kernel shutdown.");
+                shutdown();
+            }
         }
         if (sighupFlag) {
             sighupFlag = 0;
@@ -298,10 +352,13 @@ int main() {
         }
         if (sigtermFlag) {
             sigtermFlag = 0;
+            if (global_shutdown_mode == SHUTDOWN_NONE) {
+                global_shutdown_mode = SHUTDOWN_POWEROFF;
+            }
             shutdown();
         }
+
         sigsuspend(&emptymask);
     }
     return 0;
 }
-
