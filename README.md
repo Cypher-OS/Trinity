@@ -1,6 +1,6 @@
 Trinity is a minimal init system and service manager for Cypher. It is a lightweight, dependency-aware system and service manager designed for minimal overhead and robust boot management. It functions as the PID 1 process on Cypher, taking on the critical roles of system initialization, service supervision, and process control.
 
-Key Features
+Key Features <br>
 **1. PID 1 (Init System)**
 As PID 1, Trinity is the initial process spawned by the kernel. It is responsible for starting all other system services and processes.
 It adopts orphaned processes and "reaps" them, preventing them from becoming zombies and consuming system resources.
