@@ -29,6 +29,19 @@ Core system files typically remain read-only.<br>
 Trinity provides a robust and simple framework for controlling system services.<br>
 
 Standard Operations: Clean commands for starting, stopping, restarting, reloading, and checking the status of services.<br>
+
+*sudo trinity start service*
+
+*sudo trinity stop service*
+
+*sudo trinity restart service*
+
+*sudo trinity status service*
+
+*trinity shutdown*
+
+*trinity reboot*
+
 Service Supervision: Continuously monitors running services. If a service crashes, Trinity can automatically restart it based on configuration.<br>
 
 **4. Dependency-Aware Management and Start Order** <br>
