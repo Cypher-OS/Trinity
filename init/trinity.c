@@ -717,7 +717,7 @@ static void stopUnit(unit_t *u) {
 
     struct timespec t0, tnow;
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    const long grace = STOP_GRACE_SEC * 1000L;
+    const long grace = STOP_GRACE_SEC * 500L;
     long elapsed = 0;
 
     while (elapsed < grace) {
@@ -777,7 +777,7 @@ static void stopUnit(unit_t *u) {
         return;
     }
 
-    logmsg("Unit %s did not exit after %d sec; sending SIGKILL to pid %d.", u->name, STOP_GRACE_SEC, u->pid);
+    logmsg("Unit %s did not exit after %d sec; sending SIGKILL to pid %d.", u->name, STOP_GRACE_SEC/2, u->pid);
     if (kill(u->pid, SIGKILL) < 0) {
         if (errno == ESRCH) {
             logmsg("Unit %s: pid %d vanished before SIGKILL.", u->name, u->pid);
@@ -940,7 +940,7 @@ static int setupSocket(void) {
         return -1;
     }
 
-    if(chmod(CONTROL_SOCKET, 0600) < 0) {
+    if(chmod(CONTROL_SOCKET, 0666) < 0) {
         logmsg("chmod failed for %s: %s", CONTROL_SOCKET, strerror(errno));
         close(cfd);
         return -1;
@@ -1162,7 +1162,7 @@ static void setupBasicDirs(void) {
 int sendCommand(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: trinity <command> [unit_name]\n");
-        fprintf(stderr, "Commands: start, stop, status, restart, shutdown\n");
+        fprintf(stderr, "Commands: start, stop, status, restart, shutdown, reboot\n");
         return 1;
     }
 
@@ -1185,12 +1185,18 @@ int sendCommand(int argc, char **argv) {
     }
 
     char cmdStr[CMD_BUF] = {0};
-    if (argc == 2 && !strcasecmp(argv[1], "shutdown") || !strcasecmp(argv[1], "reboot")) {
-        snprintf(cmdStr, sizeof(cmdStr), "%s", argv[1]);
+    if (argc == 2) {
+        if (!strcasecmp(argv[1], "shutdown") || !strcasecmp(argv[1], "reboot")) {
+            snprintf(cmdStr, sizeof(cmdStr), "%s", argv[1]);
+        } else {
+            fprintf(stderr, "Invalid single-argument command '%s', %d args recieved.\n", argv[1], argc);
+            close(sock);
+            return 1;
+        }
     } else if (argc == 3) {
         snprintf(cmdStr, sizeof(cmdStr), "%s %s", argv[1], argv[2]);
     } else {
-        fprintf(stderr, "Invalid number of arguments for command '%s'.\n", argv[1]);
+        fprintf(stderr, "Invalid number of arguments for command '%s' , %d arguments recieved.\n", argv[1], argc);
         close(sock);
         return 1;
     }
