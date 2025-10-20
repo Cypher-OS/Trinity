@@ -5,24 +5,24 @@ Trinity is a lightweight, dependency-aware init system and service manager desig
 It functions as the PID 1 process on Cypher, handling system initialization, service supervision, and process control.
 
 ## Key Features<br>
-- **1. PID 1 (Init System)** <br>
+- **PID 1 (Init System)** <br>
 
-- **2. Dual Boot Mode** <br>
+- **Dual Boot Mode** <br>
 Trinity supports two distinct, selectable boot profiles:<br>
 --**Persistent Mode: Standard boot; Data is persistent and saved on disk.** <br>
 --**Ephemeral Mode: All writes and modifications vanish on reboot** <br>
 
-- **3. Service Management** <br>
+- **Service Management** <br>
 
-- **4. Dependency Management and Start Order** <br>
+- **Dependency Management and Start Order** <br>
 
-- **5.Socket activation**
+- **Socket activation**
 
-- **6. Unit Files - Simple human readable config files**
+- **Unit Files - Simple human readable config files**
   
-- **7. Graceful Shutdown and Reboot** <br>
+- **Graceful Shutdown and Reboot** <br>
 
-- **8. Minimalism** <br>
+- **Minimalism** <br>
 
 # Commands
 
