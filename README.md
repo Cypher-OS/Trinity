@@ -19,8 +19,10 @@ Trinity supports two distinct, selectable boot profiles:<br>
 - **5.Socket activation**
 
 - **6. Unit Files - Simple human readable config files**
+  
+- **7. Graceful Shutdown and Reboot** <br>
 
-- **7. Minimalism** <br>
+- **8. Minimalism** <br>
 
 # Commands
 
