@@ -17,15 +17,20 @@ Trinity supports two distinct, selectable boot profiles:<br>
 # Commands
 ```rsh
 sudo trinity start <service>
-
+```
+```
 sudo trinity stop <service>
-
+```
+```
 sudo trinity restart <service>
-
+```
+```
 sudo trinity status <service>
-
+```
+```
 trinity shutdown
-
+```
+```
 trinity reboot
 ```
 
