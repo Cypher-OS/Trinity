@@ -1,6 +1,9 @@
 /temp
 /services
-/cypherctl
+/trinitye
 /supervisor
 /.vscode
-/init/init*
+/build
+/test
+/init/trinity
+/init/trinity4
