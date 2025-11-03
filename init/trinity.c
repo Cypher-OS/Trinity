@@ -321,7 +321,7 @@ int parseUnitFile(const char *path, unit_t *u) {
             strncpy(u->workdir, stripQuotes(val), sizeof(u->workdir)-1);
         } else if (!strcasecmp(key, "MemoryMax")) {
             strncpy(u->mem_max, val, sizeof(u->mem_max)-1);
-        } else if (!strcasecmp(key, "CPU.max") || !strcasecmp(key, "CPUQuota")) {
+        } else if (!strcasecmp(key, "CpuMax")) {
             strncpy(u->cpu_max, val, sizeof(u->cpu_max)-1);
         }
     }
@@ -432,6 +432,124 @@ int computeStartOrder(void) {
 }
 
 //cgroups
+
+static int cgroupWrite(const char *path, const char *value) {
+    int fd = open(path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) {
+        if (errno == ENOENT) return 0;
+        logmsg("Failed to open cgroup file %s: %s", path, strerror(errno));
+        return -1;
+    }
+
+    ssize_t len = strlen(value);
+    if (write(fd, value, len) != len) {
+        logmsg("Failed to write to cgroup file %s: %s", path, strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    close(fd);
+    return 0;
+}
+
+static int setupCgroup(unit_t *u) {
+    if (u->mem_max[0] == 0 && u->cpu_max[0] == 0) 
+        return 0;
+
+    char slice_path[PATH_MAX];
+
+    if (cgroupWrite(CGROUP_ROOT "/cgroup.subtree_control", "+memory +pids") < 0) {
+        logmsg("Warning: Failed to enable controllers on root cgroup. May be running in restricted environment.");
+    }
+
+    if (cgroupWrite(CGROUP_ROOT "/cgroup.subtree_control", "+cpu") < 0) {
+        logmsg("Warning: Failed to enable CPU on root.");
+    }
+
+    snprintf(slice_path, sizeof(slice_path), CGROUP_ROOT "/" CGROUP_PREFIX);
+
+    if (mkdir(slice_path, 0755) < 0) {
+        if (errno != EEXIST) {
+            logmsg("Failed to create cgroup slice directory %s: %s", slice_path, strerror(errno));
+            return -1;
+        }
+    }
+
+    if (cgroupWrite("/sys/fs/cgroup/trinity.slice/cgroup.subtree_control", "+cpu +memory +pids") < 0) {
+        logmsg("ERROR: Failed to enable controllers on slice cgroup.");
+        return -1;
+    }
+    
+    snprintf(u->cgroup_path, sizeof(u->cgroup_path), CGROUP_ROOT "/" CGROUP_PREFIX "/%s.scope", u->name);
+
+    logmsg("Setting up cgroup for %s at %s", u->name, u->cgroup_path);
+
+    if (mkdir(u->cgroup_path, 0755) < 0) {
+        if (errno != EEXIST) {
+            logmsg("Failed to create cgroup directory %s: %s", u->cgroup_path, strerror(errno));
+            return -1;
+        }
+    }
+
+    char control_file[PATH_MAX];
+
+    if (u->mem_max[0]) {
+        snprintf(control_file, sizeof(control_file), "%s/memory.max", u->cgroup_path);
+        if (cgroupWrite(control_file, u->mem_max) < 0) {
+            logmsg("Failed to set memory limit for %s. Check cgroup setup.", u->name);
+        }
+    }
+
+    if (u->cpu_max[0]) {
+
+        snprintf(control_file, sizeof(control_file), "%s/cpu.max", u->cgroup_path);
+
+        if (access(control_file, F_OK) != 0) {
+            logmsg("FATAL ERROR: cpu.max is MISSING in scope %s (errno %d). CPU controller delegation failed.", u->cgroup_path, errno);
+            return -1; 
+        }
+
+        if (cgroupWrite(control_file, u->cpu_max) < 0) {
+            logmsg("FATAL: Failed to set CPU limit for %s. Check cgroup setup.", u->name);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int movePidToCgroup(unit_t *u, pid_t pid) {
+    char control_file[PATH_MAX];
+    char pid_str[32];
+
+    if (u->cgroup_path[0] == 0) 
+        return 0;
+
+    snprintf(control_file, sizeof(control_file), "%s/cgroup.procs", u->cgroup_path);
+    snprintf(pid_str, sizeof(pid_str), "%d", pid);
+
+    logmsg("Moving pid %d to cgroup %s", pid, u->cgroup_path);
+
+    if (cgroupWrite(control_file, pid_str) < 0) {
+        logmsg("Failed to move pid %d to cgroup %s", pid, u->cgroup_path);
+        return -1;
+    }
+    return 0;
+}
+
+static void cleanupCgroup(unit_t *u) {
+    if (u->cgroup_path[0] == 0) 
+        return;
+
+    logmsg("Cleaning up cgroup %s", u->cgroup_path);
+
+    if (rmdir(u->cgroup_path) < 0 && errno != ENOENT) {
+        logmsg("Warning: Failed to remove cgroup directory %s: %s", u->cgroup_path, strerror(errno));
+    }
+    u->cgroup_path[0] = 0;
+}
+
+
 
 //parsing envp and argv 
 
@@ -592,6 +710,11 @@ static int startUnit(unit_t *u) {
     u->last_start_time = now;
     u->state = US_ACTIVATING;
 
+    if (setupCgroup(u) < 0) {
+        u->state = US_FAILED;
+        return -1;
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
         logmsg("fork failed for %s : %s", u->name, strerror(errno));
@@ -654,6 +777,9 @@ static int startUnit(unit_t *u) {
             u->state = US_FAILED;
             return -1;
         }
+        if (u->cgroup_path[0] != 0) {
+            movePidToCgroup(u, pid);
+        }
         u->start_time = getStartProcTime(pid);
         if (!u->start_time) {
         logmsg("Warning: failed to record startTime for %s (pid=%d)", u->name, pid);
@@ -693,6 +819,7 @@ static void stopUnit(unit_t *u) {
         logmsg("unit %s PID %d not present.", u->name, u->pid);
         u->pid = 0;
         u->state = US_INACTIVE;
+        cleanupCgroup(u);
         return;
     }
 
@@ -700,6 +827,7 @@ static void stopUnit(unit_t *u) {
         logmsg("unit %s PID %d, start time mismatch (expected %llu got %llu).", u->name, u->pid, u->start_time, curStart);
         u->pid = 0;
         u->state = US_INACTIVE;
+        cleanupCgroup(u);
         return;
     }
 
@@ -710,6 +838,7 @@ static void stopUnit(unit_t *u) {
         logmsg("unit %s PID %d, is already gone after TERM.",  u->name, u->pid);
         u->pid = 0;
         u->state = US_INACTIVE;
+        cleanupCgroup(u);
         return;
     } else if (sigErr < 0) {
         logmsg("Error sending SIGTERM to %s (pid %d): %s", u->name, u->pid, strerror(errno));
@@ -727,6 +856,7 @@ static void stopUnit(unit_t *u) {
                 logmsg("unit %s PID %d exited cleanly. status 0x%x", u->name, u->pid, u->exitStatus);
                 u->pid = 0;
                 u->state = US_INACTIVE;
+                cleanupCgroup(u);
                 return;
             } else if (r == -1) {
                 logmsg("waitpid error while waiting for %s: %s", u->name, strerror(errno));
@@ -738,6 +868,7 @@ static void stopUnit(unit_t *u) {
                 logmsg("unit %s PID %d disappeared during grace period", u->name, u->pid);
                 u->pid = 0;
                 u->state = US_INACTIVE;
+                cleanupCgroup(u);
                 return;
             }
         }    
@@ -747,12 +878,14 @@ static void stopUnit(unit_t *u) {
             logmsg("Unit %s PID %d vanished (no proc entry).", u->name, u->pid);
             u->pid = 0;
             u->state = US_INACTIVE;
+            cleanupCgroup(u);
             return;
         }
         if (u->start_time && nowStart != u->start_time) {
             logmsg("unit %s PID %d was recycled (start_time changed). skipping kills", u->name, u->pid);
             u->pid = 0;
             u->state = US_INACTIVE;
+            cleanupCgroup(u);
             return;
         }
 
@@ -768,12 +901,14 @@ static void stopUnit(unit_t *u) {
         logmsg("unit %s PID %d gone at grace-time.", u->name, u->pid);
         u->pid = 0;
         u->state = US_INACTIVE;
+        cleanupCgroup(u);
         return;
     }
     if (u->start_time && finalStart != u->start_time) {
         logmsg("Unit %s: pid %d recycled before kill. skipping SIGKILL.", u->name, u->pid);
         u->pid = 0;
         u->state = US_INACTIVE;
+        cleanupCgroup(u);
         return;
     }
 
@@ -783,6 +918,7 @@ static void stopUnit(unit_t *u) {
             logmsg("Unit %s: pid %d vanished before SIGKILL.", u->name, u->pid);
             u->pid = 0;
             u->state = US_INACTIVE;
+            cleanupCgroup(u);
             return;
         }
         logmsg("Error sending SIGKILL to %s: %s", u->name, strerror(errno));
@@ -794,15 +930,18 @@ static void stopUnit(unit_t *u) {
             logmsg("Unit %s (pid %d) reaped after SIGKILL (status 0x%x).", u->name, u->pid, u->exitStatus);
             u->pid = 0;
             u->state = US_INACTIVE;
+            cleanupCgroup(u);
             return;
         } else if (reapRes == 0) {
             logmsg("Unit %s: not our child when reaping; treating as gone.", u->name);
             u->pid = 0;
             u->state = US_INACTIVE;
+            cleanupCgroup(u);
             return;
         } else {
             logmsg("Error reaping %s after SIGKILL: %s", u->name, strerror(errno));
             u->state = US_FAILED;
+            cleanupCgroup(u);
             return;
         }
     } else {
@@ -820,10 +959,12 @@ static void stopUnit(unit_t *u) {
             logmsg("unit %s terminated after SIGKILL.", u->name);
             u->pid = 0;
             u->state = US_INACTIVE;
+            cleanupCgroup(u);
             return;
         } else {
             logmsg("Unit %s: pid %d still alive after SIGKILL; giving up (marking FAILED).", u->name, u->pid);
             u->state = US_FAILED;
+            cleanupCgroup(u);
             return;
         }
     }
@@ -881,6 +1022,7 @@ static void handleChildExit(pid_t pid, int status) {
             } else {
                 u->state = US_FAILED;
             }
+            cleanupCgroup(u);
             if (!shutting_down) {
                 if(u->restart == RM_ALWAYS || (u->restart == RM_ONFAIL && !(WIFEXITED(status) && exitcode == 0))) {
                     startRestart(u, u->restart_sec);
